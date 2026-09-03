@@ -1,0 +1,10 @@
+# This repository's text is LF, everywhere, whoever checks it out.
+#
+# Git rewrites line endings on checkout by default, so on Windows every source
+# file arrives with CRLF -- and `gofmt -l` then reports EVERY file as
+# unformatted. The Windows lane found it, which is the only lane that could.
+* text=auto eol=lf
+
+# And fixtures are not text at all: they must be the same BYTES on every
+# machine. A witness a checkout may edit is not a witness.
+testdata/** -text
