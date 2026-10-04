@@ -6,6 +6,9 @@ package keyfactor
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -36,6 +39,15 @@ type fakeKey struct {
 	// noSignature makes the key answer an assertion with no signature, which
 	// proves nothing.
 	noSignature bool
+	// signer is the credential's private key; the fake signs every assertion
+	// with it, over the authenticator data and the client-data hash it was
+	// sent, as an authenticator does.
+	signer *ecdsa.PrivateKey
+	// rpHashFor, when set, is the relying party whose hash the key puts in its
+	// answer instead of the one it was asked for.
+	rpHashFor string
+	// credential, when set, is the credential ID the key names in its answer.
+	credential []byte
 	// pin plays the authenticator half of PIN/UV auth protocol two.
 	pin *pinAuthenticator
 	// pinStatus, when non-zero, is the error clientPIN answers with.
@@ -54,12 +66,28 @@ type fakeKey struct {
 
 const fakeChannel = 0x11223344
 
+// signer is the credential every fake key holds, and pub what a registration
+// would have recorded for it.
+var (
+	signer = mustKey()
+	pub    = &signer.PublicKey
+)
+
+func mustKey() *ecdsa.PrivateKey {
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	return k
+}
+
 func newFakeKey() *fakeKey {
 	return &fakeKey{
-		flags: fido.FlagUP,
-		pin:   newPINAuthenticator("0000"),
-		chn:   fido.NewReassembler(fakeChannel),
-		bcast: fido.NewReassembler(fido.BroadcastChannel),
+		flags:  fido.FlagUP,
+		signer: signer,
+		pin:    newPINAuthenticator("0000"),
+		chn:    fido.NewReassembler(fakeChannel),
+		bcast:  fido.NewReassembler(fido.BroadcastChannel),
 	}
 }
 
@@ -142,14 +170,33 @@ func (f *fakeKey) ctap2(data []byte) [][]byte {
 		if f.status != 0 {
 			return f.reply(f.status, nil)
 		}
+		var req struct {
+			RPID           string `cbor:"1,keyasint"`
+			ClientDataHash []byte `cbor:"2,keyasint"`
+		}
+		if err := cbor.Unmarshal(data[1:], &req); err != nil {
+			return f.reply(0x12, nil) // CTAP2_ERR_INVALID_CBOR
+		}
+		rp := req.RPID
+		if f.rpHashFor != "" {
+			rp = f.rpHashFor
+		}
 		authData := make([]byte, 37)
-		h := sha256.Sum256([]byte("example.test"))
+		h := sha256.Sum256([]byte(rp))
 		copy(authData, h[:])
 		authData[32] = byte(f.flags)
 		binary.BigEndian.PutUint32(authData[33:], 7)
 		body := map[uint64]any{2: authData}
+		if f.credential != nil {
+			body[1] = map[string]any{"type": "public-key", "id": f.credential}
+		}
 		if !f.noSignature {
-			body[3] = []byte{0x30, 0x44, 0x01, 0x02}
+			d := sha256.Sum256(append(append([]byte{}, authData...), req.ClientDataHash...))
+			sig, err := ecdsa.SignASN1(rand.Reader, f.signer, d[:])
+			if err != nil {
+				panic(err)
+			}
+			body[3] = sig
 		}
 		return f.reply(0, body)
 	}
@@ -165,7 +212,7 @@ func opener(k *fakeKey) (Opener, *int) {
 func TestAKeyThatAnswersSatisfiesTheFactor(t *testing.T) {
 	k := newFakeKey()
 	open, calls := opener(k)
-	f := New(open, Options{RPID: "example.test", CredentialID: []byte("cred")})
+	f := New(open, Options{PublicKey: pub, RPID: "example.test", CredentialID: []byte("cred")})
 
 	if f.Kind() != mfa.Possession {
 		t.Errorf("a security key is %v, want possession", f.Kind())
@@ -188,7 +235,7 @@ func TestAKeyThatAnswersWithoutAnyoneTouchingItIsRefused(t *testing.T) {
 	k := newFakeKey()
 	k.flags = 0
 	open, _ := opener(k)
-	err := New(open, Options{RPID: "example.test"}).Verify(context.Background())
+	err := New(open, Options{PublicKey: pub, RPID: "example.test"}).Verify(context.Background())
 	if err == nil {
 		t.Fatal("an untouched key satisfied the factor")
 	}
@@ -204,7 +251,7 @@ func TestVerificationIsCheckedInTheAnswer(t *testing.T) {
 	k.flags = fido.FlagUP // present, but not verified
 	k.pinRetries = 8
 	open, _ := opener(k)
-	err := New(open, Options{RPID: "example.test", PIN: "0000"}).Verify(context.Background())
+	err := New(open, Options{PublicKey: pub, RPID: "example.test", PIN: "0000"}).Verify(context.Background())
 	if err == nil {
 		t.Fatal("a key that did not verify satisfied a verified factor")
 	}
@@ -216,7 +263,7 @@ func TestVerificationIsCheckedInTheAnswer(t *testing.T) {
 	k2.flags = fido.FlagUP | fido.FlagUV
 	k2.pinRetries = 8
 	open2, _ := opener(k2)
-	if err := New(open2, Options{RPID: "example.test", PIN: "0000"}).Verify(context.Background()); err != nil {
+	if err := New(open2, Options{PublicKey: pub, RPID: "example.test", PIN: "0000"}).Verify(context.Background()); err != nil {
 		t.Fatalf("a key that verified was refused: %v", err)
 	}
 	// It really did buy a token: clientPIN was asked before getAssertion.
@@ -232,7 +279,7 @@ func TestTheLastPINAttemptIsNotSpentOnAGuess(t *testing.T) {
 		k := newFakeKey()
 		k.pinRetries = retries
 		open, _ := opener(k)
-		err := New(open, Options{RPID: "example.test", PIN: "0000"}).Verify(context.Background())
+		err := New(open, Options{PublicKey: pub, RPID: "example.test", PIN: "0000"}).Verify(context.Background())
 		if err == nil {
 			t.Fatalf("with %d attempts left, the key was asked anyway", retries)
 		}
@@ -252,7 +299,7 @@ func TestAKeyThatWillTakeNoMorePINsSaysSo(t *testing.T) {
 	k := newFakeKey()
 	k.powerCycle = true
 	open, _ := opener(k)
-	err := New(open, Options{RPID: "example.test", PIN: "0000"}).Verify(context.Background())
+	err := New(open, Options{PublicKey: pub, RPID: "example.test", PIN: "0000"}).Verify(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "unplugged") {
 		t.Errorf("error = %v", err)
 	}
@@ -263,7 +310,7 @@ func TestAnAssertionWithNoSignatureIsRefused(t *testing.T) {
 	k := newFakeKey()
 	k.noSignature = true
 	open, _ := opener(k)
-	if err := New(open, Options{RPID: "example.test"}).Verify(context.Background()); err == nil {
+	if err := New(open, Options{PublicKey: pub, RPID: "example.test"}).Verify(context.Background()); err == nil {
 		t.Fatal("an assertion with no signature satisfied the factor")
 	}
 }
@@ -272,7 +319,7 @@ func TestAKeyThatRefusesIsARefusal(t *testing.T) {
 	k := newFakeKey()
 	k.status = 0x27 // CTAP2_ERR_ACTION_TIMEOUT, in the specification's numbering
 	open, _ := opener(k)
-	err := New(open, Options{RPID: "example.test"}).Verify(context.Background())
+	err := New(open, Options{PublicKey: pub, RPID: "example.test"}).Verify(context.Background())
 	if err == nil {
 		t.Fatal("a key that refused satisfied the factor")
 	}
@@ -287,7 +334,7 @@ func TestAnEmptyPortIsNotARefusal(t *testing.T) {
 	noKey := errors.New("no security key is attached")
 	f := New(func(context.Context) (fido.Transport, error) {
 		return nil, Unavailable(noKey)
-	}, Options{RPID: "example.test"})
+	}, Options{PublicKey: pub, RPID: "example.test"})
 
 	err := f.Verify(context.Background())
 	if !errors.Is(err, mfa.ErrUnavailable) {
@@ -312,7 +359,7 @@ func TestAnEmptyPortIsNotARefusal(t *testing.T) {
 // through the same return, and only the Opener knows which it was.
 func TestAnOpenerThatFailsIsPassedThrough(t *testing.T) {
 	boom := errors.New("the device is on fire")
-	f := New(func(context.Context) (fido.Transport, error) { return nil, boom }, Options{RPID: "e.test"})
+	f := New(func(context.Context) (fido.Transport, error) { return nil, boom }, Options{PublicKey: pub, RPID: "e.test"})
 	err := f.Verify(context.Background())
 	if !errors.Is(err, boom) {
 		t.Errorf("error = %v", err)
@@ -331,7 +378,7 @@ func TestAnIncompleteFactorIsRefusedBeforeAnythingIsOpened(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "relying party id") {
 		t.Errorf("error = %q", err)
 	}
-	if err := New(nil, Options{RPID: "e.test"}).Verify(context.Background()); err == nil {
+	if err := New(nil, Options{PublicKey: pub, RPID: "e.test"}).Verify(context.Background()); err == nil {
 		t.Error("a factor with no opener was accepted")
 	} else if !strings.Contains(err.Error(), "opener") {
 		t.Errorf("error = %q", err)
@@ -362,7 +409,7 @@ func TestAKeyThatWillNotHandshakeIsClosed(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	open, _ := opener(k)
-	if err := New(open, Options{RPID: "e.test"}).Verify(ctx); err == nil {
+	if err := New(open, Options{PublicKey: pub, RPID: "e.test"}).Verify(ctx); err == nil {
 		t.Fatal("a key that never answered satisfied the factor")
 	}
 	if k.closed == 0 {
@@ -411,7 +458,7 @@ func TestAKeyThatWillNotSayHowManyAttemptsAreLeftIsRefused(t *testing.T) {
 	k := newFakeKey()
 	k.pinStatus = 0x2B // unsupported option
 	open, _ := opener(k)
-	err := New(open, Options{RPID: "example.test", PIN: "0000"}).Verify(context.Background())
+	err := New(open, Options{PublicKey: pub, RPID: "example.test", PIN: "0000"}).Verify(context.Background())
 	if err == nil {
 		t.Fatal("a key that would not say satisfied a verified factor")
 	}
@@ -434,7 +481,7 @@ func TestProtocolOneIsUsedWhenTwoIsNotOffered(t *testing.T) {
 	// The fake only plays protocol two, so asking it for one must FAIL -- which
 	// is what proves the choice was made from what the key advertised rather
 	// than hard-coded.
-	err := New(open, Options{RPID: "example.test", PIN: "0000"}).Verify(context.Background())
+	err := New(open, Options{PublicKey: pub, RPID: "example.test", PIN: "0000"}).Verify(context.Background())
 	if err == nil {
 		t.Fatal("protocol two was used against a key offering only one")
 	}
@@ -450,7 +497,77 @@ func TestAKeyThatWillNotDescribeItselfFallsBackToProtocolOne(t *testing.T) {
 	open, _ := opener(k)
 	// Again the fake plays only two, so this must fail rather than silently
 	// pick two.
-	if err := New(open, Options{RPID: "example.test", PIN: "0000"}).Verify(context.Background()); err == nil {
+	if err := New(open, Options{PublicKey: pub, RPID: "example.test", PIN: "0000"}).Verify(context.Background()); err == nil {
 		t.Fatal("a key that would not describe itself was assumed to speak protocol two")
+	}
+}
+
+// ⛔ An answer is verified against the registration, each part on its own: a
+// device that gets any one of them wrong is refused even with UP and UV set,
+// because the flags mean something only once the signature over them holds.
+func TestAnAnswerIsVerifiedAgainstTheRegisteredCredential(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		key  func(*fakeKey)
+		want string
+	}{
+		{"another relying party's hash", func(k *fakeKey) { k.rpHashFor = "elsewhere.test" }, "another relying party"},
+		{"another credential", func(k *fakeKey) { k.credential = []byte("someone-else") }, "other than the one asked for"},
+		{"a signature by another key", func(k *fakeKey) { k.signer = mustKey() }, "did not make"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			k := newFakeKey()
+			k.flags = fido.FlagUP | fido.FlagUV
+			c.key(k)
+			open, _ := opener(k)
+			err := New(open, Options{PublicKey: pub, RPID: "example.test", CredentialID: []byte("cred")}).Verify(context.Background())
+			if err == nil {
+				t.Fatal("an answer the credential did not make satisfied the factor")
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error = %q, want it to say %q", err, c.want)
+			}
+		})
+	}
+	// The credential asked for, named in the answer, is accepted; and a
+	// discoverable credential (none asked for) may name whichever it is,
+	// because the signature is what binds it.
+	for _, asked := range [][]byte{[]byte("cred"), nil} {
+		k := newFakeKey()
+		k.credential = []byte("cred")
+		open, _ := opener(k)
+		if err := New(open, Options{PublicKey: pub, RPID: "example.test", CredentialID: asked}).Verify(context.Background()); err != nil {
+			t.Errorf("asking for %q, the registered credential was refused: %v", asked, err)
+		}
+	}
+}
+
+// ⛔ A factor with no public key would accept any device that answers, so it is
+// a caller mistake, reported before anything is opened -- as is a key on a
+// curve that is not verified here.
+func TestAFactorWithoutTheCredentialsPublicKeyIsRefusedBeforeAnythingIsOpened(t *testing.T) {
+	p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		key  *ecdsa.PublicKey
+		want string
+	}{
+		{nil, "no public key"},
+		{&p384.PublicKey, "not on P-256"},
+	} {
+		k := newFakeKey()
+		open, calls := opener(k)
+		err := New(open, Options{PublicKey: c.key, RPID: "example.test"}).Verify(context.Background())
+		if err == nil {
+			t.Fatalf("a factor with public key %v was accepted", c.key)
+		}
+		if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("error = %q, want it to say %q", err, c.want)
+		}
+		if *calls != 0 {
+			t.Errorf("the key was opened %d times", *calls)
+		}
 	}
 }
