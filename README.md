@@ -43,7 +43,10 @@ platform-specific: how a key is found, and what it means when there is none.
   every credential on it. The count is asked for first, and a key that will not
   say is refused rather than tried.
 - **An empty port is not a refusal.** The `Opener` decides — it is the only
-  thing that knows — and its verdict is passed through untouched.
+  thing that knows — and its verdict is passed through untouched. An `Opener`
+  that finds nothing wraps its error with `keyfactor.Unavailable`, which marks
+  it `mfa.ErrUnavailable`, so a policy counts "could not be asked" apart from
+  "said no".
 - **The challenge is random.** Nothing here verifies the signature, so there is
   no protocol to bind one to, and a fixed challenge would let a recorded
   assertion be replayed here for ever.
