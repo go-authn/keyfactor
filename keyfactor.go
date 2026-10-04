@@ -9,7 +9,8 @@
 // how much proof is enough and knows about no device. Neither should import
 // the other; this does both, and nothing else does.
 //
-//	f := keyfactor.New(linuxfido.Transport, keyfactor.Options{
+//	open := func(context.Context) (fido.Transport, error) { return linuxfido.Transport() }
+//	f := keyfactor.New(open, keyfactor.Options{
 //	    RPID:         "example.test",
 //	    CredentialID: id,
 //	})

@@ -8,7 +8,9 @@ Turns a security key into a factor a policy can ask. Pure Go, `CGO_ENABLED=0`,
 no platform.
 
 ```go
-f := keyfactor.New(linuxfido.Transport, keyfactor.Options{
+// An Opener takes the attempt's context; go-gnulinux/fido's Transport does not.
+open := func(context.Context) (fido.Transport, error) { return linuxfido.Transport() }
+f := keyfactor.New(open, keyfactor.Options{
     RPID:         "example.test",
     CredentialID: id,
 })
