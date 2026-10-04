@@ -571,3 +571,16 @@ func TestAFactorWithoutTheCredentialsPublicKeyIsRefusedBeforeAnythingIsOpened(t 
 		}
 	}
 }
+
+// ⛔ One security key is one factor, however many times it is passed. A
+// keyfactor holds its Opener, a func, and mfa compared factors with
+// reflect.DeepEqual, which is never true for a non-nil func: the same factor
+// value passed twice satisfied Policy{Count: 2} (security audit). mfa v0.4.0
+// compares funcs by the code they point at.
+func TestTheSameKeyPassedTwiceIsOneFactor(t *testing.T) {
+	open, _ := opener(newFakeKey())
+	f := New(open, Options{PublicKey: pub, RPID: "example.test", CredentialID: []byte("cred")})
+	if _, err := mfa.Verify(context.Background(), mfa.Policy{Count: 2}, f, f); err == nil {
+		t.Error("one key passed twice satisfied a two-factor policy")
+	}
+}
