@@ -9,12 +9,35 @@
 // how much proof is enough and knows about no device. Neither should import
 // the other; this does both, and nothing else does.
 //
+//	// From the registration: the credential ID and its public key.
+//	pub, err := attestation.Parsed.PublicKey()
 //	open := func(context.Context) (fido.Transport, error) { return linuxfido.Transport() }
 //	f := keyfactor.New(open, keyfactor.Options{
 //	    RPID:         "example.test",
 //	    CredentialID: id,
+//	    PublicKey:    pub,
 //	})
 //	r, err := mfa.Verify(ctx, mfa.Policy{Count: 2}, somethingElse, f)
+//
+// # What is checked
+//
+// Whatever answers on the transport is a device, not necessarily THE key: a
+// programmable USB board can speak CTAP as well as a security key can. So the
+// answer is verified against what the registration recorded -- the relying
+// party hash, the credential ID when the device names one, and the signature
+// over the authenticator data and a fresh random challenge, with the
+// credential's public key. A device that does not hold the credential's
+// private key cannot produce that signature, whatever flags it claims.
+//
+// # What is not, and cannot be
+//
+// A PIN is sent to whatever device answers, before anything is signed: CTAP
+// has the platform hand the key LEFT(SHA-256(PIN), 16), encrypted under a
+// secret agreed with the device itself. A forged device holding no credential
+// is refused here, but it has still received that hash, and a short PIN falls
+// to an offline search in moments. That is inherent to CTAP, not something
+// this package can fix: use a long PIN, and do not type one into a key whose
+// provenance is unknown.
 //
 // # Why it is not in a platform package
 //
@@ -28,7 +51,10 @@
 package keyfactor
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
@@ -58,8 +84,14 @@ type Options struct {
 	RPID string
 	// CredentialID is what a registration returned. Empty asks the key for a
 	// discoverable credential, which it has only if one was registered with
-	// the "rk" option.
+	// the "rk" option. When set, an answer naming any other credential is
+	// refused.
 	CredentialID []byte
+	// PublicKey is the credential's public key, from the registration
+	// (fido.AuthData.PublicKey on the attestation). Required: the signature
+	// it verifies is the only thing that tells the key that was registered
+	// from any device that answers CTAP. Only P-256 is accepted.
+	PublicKey *ecdsa.PublicKey
 	// PIN, when set, asks the key to establish WHO is holding it rather than
 	// only that somebody is.
 	//
@@ -108,6 +140,13 @@ func (f factor) Verify(ctx context.Context) error {
 	if f.opts.RPID == "" {
 		return errors.New("keyfactor: a security key needs a relying party id to assert for")
 	}
+	if f.opts.PublicKey == nil {
+		return errors.New("keyfactor: no public key for the credential; " +
+			"without one any device that answers would pass, so pass the one from the registration")
+	}
+	if f.opts.PublicKey.Curve != elliptic.P256() {
+		return errors.New("keyfactor: the credential's public key is not on P-256, the only curve verified here")
+	}
 	t, err := f.open(ctx)
 	if err != nil {
 		return err
@@ -119,10 +158,9 @@ func (f factor) Verify(ctx context.Context) error {
 	}
 	defer k.Close()
 
-	// The client-data hash is random. Nothing here verifies the signature, so
-	// there is no protocol to bind it to -- and a FIXED hash would let a
-	// recorded assertion be replayed at this function for ever. A caller who
-	// needs a verifiable assertion should use go-authn/fido directly.
+	// The client-data hash is a fresh random challenge, and the signature
+	// covers it: a FIXED hash would let a recorded assertion be replayed at
+	// this function for ever.
 	// crypto/rand.Read "never returns an error, and always fills b entirely":
 	// it crashes the program rather than handing back a short read. So there is
 	// no branch to write here, and writing one would be dead weight no test
@@ -150,6 +188,21 @@ func (f factor) Verify(ctx context.Context) error {
 	a, err := k.GetAssertion(ctx, req)
 	if err != nil {
 		return err
+	}
+	// ⛔ Whatever answered is a device, not necessarily the key. Before this
+	// was checked, a device holding no credential -- a zero rpIdHash, a
+	// one-byte "signature", somebody else's credential ID, UP|UV claimed --
+	// satisfied the factor. The flags below mean something only once the
+	// signature over them has been verified.
+	if rp := sha256.Sum256([]byte(f.opts.RPID)); a.Parsed.RPIDHash != rp {
+		return fmt.Errorf("keyfactor: %s answered for another relying party", f.Name())
+	}
+	if len(f.opts.CredentialID) > 0 && len(a.Credential.ID) > 0 && !bytes.Equal(a.Credential.ID, f.opts.CredentialID) {
+		return fmt.Errorf("keyfactor: %s answered with a credential other than the one asked for", f.Name())
+	}
+	digest := sha256.Sum256(append(append([]byte{}, a.AuthData...), hash[:]...))
+	if !ecdsa.VerifyASN1(f.opts.PublicKey, digest[:], a.Signature) {
+		return fmt.Errorf("keyfactor: %s answered with a signature the credential's key did not make", f.Name())
 	}
 	// The key answering is not enough: it must say a person was there.
 	if !a.Parsed.Flags.Has(fido.FlagUP) {
