@@ -1,9 +1,9 @@
 github.com/fxamacker/cbor/v2 v2.9.4 h1:xwjVlxEMR3S605oUlgBjKLTTeGFciYPGYCtF/35LKGo=
 github.com/fxamacker/cbor/v2 v2.9.4/go.mod h1:vM4b+DJCtHn+zz7h3FFp/hDAI9WNWCsZj23V5ytsSxQ=
-github.com/go-authn/fido v0.5.0 h1:8a9egNACJPcGPOcMRLawkk9dUHawhJOP4kSI5dzqw4s=
-github.com/go-authn/fido v0.5.0/go.mod h1:LaEepE2Inuw1kNEc0CgGt93VGVKjtyRXBMZfyEclKP8=
-github.com/go-authn/mfa v0.4.0 h1:4zVSpYR/y7k2lf7KVJmkpshXFN5Uq3sjROOuZ/Jgjso=
-github.com/go-authn/mfa v0.4.0/go.mod h1:wPN7SA2sguNCNUjePafkN6BvO9LFc82PRR3bLwboR6I=
+github.com/go-authn/fido v0.6.0 h1:qdrpx7NtyHAuF7uiYDw22obcHeF0ZjlIlR0K1s1G2PY=
+github.com/go-authn/fido v0.6.0/go.mod h1:W92gyfbs3S8rPBpbT8vFOZqQBoL00Y1k+bjqwLp2Srw=
+github.com/go-authn/mfa v0.5.0 h1:9HkcmhBmoTIS+2yD6gvtFMPzi19tjuElEdBXXXBLwuo=
+github.com/go-authn/mfa v0.5.0/go.mod h1:gXW2ygHUIq0dbkDK5ZwtngATc2cSpTuszcin6KAqjWA=
 github.com/x448/float16 v0.8.4 h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=
 github.com/x448/float16 v0.8.4/go.mod h1:14CWIYCyZA/cWjXOioeEpHeN/83MdbZDRQHoFcYsOfg=
 golang.org/x/crypto v0.57.0 h1:3ZVCjf8Ggz7zneR/EHRVx68Ctf+2pmIMP2UFhh9cC6M=
