@@ -1,5 +1,5 @@
-github.com/fxamacker/cbor/v2 v2.9.6 h1:NHZPxuUjJXQjX9itA785y/5NKSlI4HQ+S7noZsmI7hs=
-github.com/fxamacker/cbor/v2 v2.9.6/go.mod h1:4EaZp6ClVunETjQ4GHmGNzysDK91Lr+r6Yz6tJqzVCw=
+github.com/fxamacker/cbor/v2 v2.10.0 h1:HVF3T5vYwLqO81ebPirWEPNv2SMrUMD3HLnKgEr6uWE=
+github.com/fxamacker/cbor/v2 v2.10.0/go.mod h1:uSwlToFuT9BZAKRxxVm3qQC8DR4tlWl7D6pf20iRYH4=
 github.com/go-authn/fido v0.6.2 h1:FHIriyj0wh+xoQcxaFaELzslaVn28UBxN+rArYj26cE=
 github.com/go-authn/fido v0.6.2/go.mod h1:rxQ/vJWdp8Lb+glv2G6XhKx8chl0SkqmPAtooiLW2bY=
 github.com/go-authn/mfa v0.5.0 h1:9HkcmhBmoTIS+2yD6gvtFMPzi19tjuElEdBXXXBLwuo=
