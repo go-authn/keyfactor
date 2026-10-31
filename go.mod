@@ -1,6 +1,6 @@
 module github.com/go-authn/keyfactor
 
-go 1.27.1
+go 1.27.3
 
 require (
 	github.com/fxamacker/cbor/v2 v2.10.0
